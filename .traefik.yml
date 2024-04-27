@@ -1,0 +1,11 @@
+displayName: Temporary JWT Auth Proxy
+type: middleware
+
+import: github.com/RouNNdeL/tmp-auth-proxy
+
+summary: "A simple traefik middleware authenticating the user based on a URL with a JWT."
+
+testData:
+  Headers:
+    X-Demo: test
+    X-URL: '{{URL}}'
