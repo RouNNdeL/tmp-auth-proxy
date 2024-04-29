@@ -3,8 +3,11 @@ package tmp_auth_proxy
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"log"
 	"net/http"
 	"net/url"
+	"reflect"
 	"strings"
 	"time"
 
@@ -79,23 +82,28 @@ func (a *JWTAuth) ValidateSession(rw http.ResponseWriter, req *http.Request) boo
 	token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
 		return []byte(a.config.Secret), nil
 	}, jwt.WithExpirationRequired(), jwt.WithIssuedAt(), jwt.WithLeeway(leeway))
+	if err != nil {
+		log.Printf("Session validation failed: %v", err)
+		http.Error(rw, "Forbidden", http.StatusForbidden)
+		return false
+	}
 
 	claims, ok := token.Claims.(jwt.MapClaims)
 	if !ok {
-		rw.Write([]byte("bad claims\n"))
+		log.Printf("Session validation failed: failed to cast Claims to MapClaims")
 		http.Error(rw, "Forbidden", http.StatusForbidden)
 		return false
 	}
 
 	issuer, err := claims.GetIssuer()
 	if err != nil {
-		rw.Write([]byte(err.Error() + "\n"))
+		log.Printf("Session validation failed: failed to get issuer")
 		http.Error(rw, "Forbidden", http.StatusForbidden)
 		return false
 	}
 
 	if issuer != host {
-		rw.Write([]byte("incorrect issuer\n"))
+		log.Printf("Session validation failed: invalid issuer")
 		http.Error(rw, "Forbidden", http.StatusForbidden)
 		return false
 	}
@@ -111,29 +119,41 @@ func (a *JWTAuth) HandleTokenUrl(rw http.ResponseWriter, req *http.Request, toke
 		return []byte(a.config.Secret), nil
 	}, jwt.WithAudience(host), jwt.WithExpirationRequired(), jwt.WithIssuedAt(), jwt.WithLeeway(leeway))
 
-	if err != nil || !token.Valid {
-		rw.Write([]byte(err.Error() + "\n"))
+	if err != nil {
+		// errors.Is does not seem to work with the joinedError type wrapped by the jwt library
+		if strings.Contains(err.Error(), jwt.ErrTokenExpired.Error()) {
+			log.Printf("Auth failed: link expired")
+			http.Error(rw, "Your link is no longer valid", http.StatusForbidden)
+		} else {
+			log.Printf("Auth failed: %v", err)
+			http.Error(rw, "Forbidden", http.StatusForbidden)
+		}
+		return
+	}
+
+	if !token.Valid {
+		log.Printf("Auth failed: token not valid")
 		http.Error(rw, "Forbidden", http.StatusForbidden)
 		return
 	}
 
 	claims, ok := token.Claims.(jwt.MapClaims)
 	if !ok {
-		rw.Write([]byte("bad claims\n"))
+		log.Printf("Auth failed: failed to cast claims")
 		http.Error(rw, "Forbidden", http.StatusForbidden)
 		return
 	}
 
 	targetUrlPath, err := claims.GetSubject()
 	if err != nil {
-		rw.Write([]byte(err.Error() + "\n"))
+		log.Printf("Auth failed: %v", err)
 		http.Error(rw, "Forbidden", http.StatusForbidden)
 		return
 	}
 
 	tokenExpP, err := claims.GetExpirationTime()
 	if err != nil {
-		rw.Write([]byte(err.Error() + "\n"))
+		log.Printf("Auth failed: %v", err)
 		http.Error(rw, "Forbidden", http.StatusForbidden)
 		return
 	}
@@ -141,7 +161,7 @@ func (a *JWTAuth) HandleTokenUrl(rw http.ResponseWriter, req *http.Request, toke
 
 	tokenIssuedAtP, err := claims.GetIssuedAt()
 	if err != nil {
-		rw.Write([]byte(err.Error() + "\n"))
+		log.Printf("Auth failed: %v", err)
 		http.Error(rw, "Forbidden", http.StatusForbidden)
 		return
 	}
@@ -154,7 +174,7 @@ func (a *JWTAuth) HandleTokenUrl(rw http.ResponseWriter, req *http.Request, toke
 	}
 	targetIsSecureB, ok := targetIsSecure.(bool)
 	if !ok {
-		rw.Write([]byte("is secure not bool\n"))
+		log.Printf("Auth failed: failed to cast isSecure to bool")
 		http.Error(rw, "Forbidden", http.StatusForbidden)
 		return
 	}
@@ -176,7 +196,7 @@ func (a *JWTAuth) HandleTokenUrl(rw http.ResponseWriter, req *http.Request, toke
 	} else {
 		sessionDurationF, ok := sessionDuration.(float64)
 		if !ok {
-			rw.Write([]byte("bad ses\n"))
+			log.Printf("Auth failed: failed to cast sessionDuration to float")
 			http.Error(rw, "Forbidden", http.StatusForbidden)
 			return
 		}
@@ -192,6 +212,7 @@ func (a *JWTAuth) HandleTokenUrl(rw http.ResponseWriter, req *http.Request, toke
 
 	signedSessionToken, err := sessionToken.SignedString([]byte(a.config.Secret))
 	if err != nil {
+		log.Printf("Auth failed: failed to sign session token")
 		http.Error(rw, "Forbidden", http.StatusForbidden)
 		return
 	}
